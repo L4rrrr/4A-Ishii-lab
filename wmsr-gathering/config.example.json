@@ -1,0 +1,15 @@
+{
+  "n": 20,
+  "f": 1,
+  "radius": 6.0,
+  "steps": 100,
+  "seed": 7,
+  "box_size": 10.0,
+  "fault_count": 1,
+  "faulty_ids": [0],
+  "fault_mode": "byzantine",
+  "fault_step": 1.0,
+  "attack_strategy": "split",
+  "attack_amplitude": 20.0,
+  "tolerance": 0.001
+}
