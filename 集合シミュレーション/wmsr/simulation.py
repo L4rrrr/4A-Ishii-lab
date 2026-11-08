@@ -5,6 +5,11 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+from .circle import minimum_enclosing_circle
+
+ALGORITHM_NAMES = {"wmsr": "W-MSR", "mec": "最小包含円"}
+FAULT_NAMES = {"none": "故障なし", "byzantine": "ビザンチン故障", "stuck": "停止故障", "random": "ランダム移動故障"}
+
 
 @dataclass(frozen=True)
 class Config:
@@ -21,6 +26,8 @@ class Config:
     attack_strategy: str = "split"
     attack_amplitude: float = 20.0
     tolerance: float = 0.001
+    algorithm: str = "wmsr"
+    move_fraction: float = 1.0
 
     def __post_init__(self):
         for name in ("n", "f", "steps", "seed", "fault_count"):
@@ -31,7 +38,7 @@ class Config:
             raise ValueError("require n >= 1 and 0 <= f < n")
         if self.steps < 0 or self.seed < 0:
             raise ValueError("steps and seed must be nonnegative")
-        for name in ("radius", "box_size", "fault_step", "tolerance", "attack_amplitude"):
+        for name in ("radius", "box_size", "fault_step", "tolerance", "attack_amplitude", "move_fraction"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(f"{name} must be a finite number")
@@ -39,6 +46,10 @@ class Config:
                 raise ValueError(f"{name} must be finite and nonnegative")
         if self.box_size == 0 or self.tolerance == 0:
             raise ValueError("box_size and tolerance must be positive")
+        if self.algorithm not in ALGORITHM_NAMES:
+            raise ValueError("algorithm は wmsr または mec を指定してください")
+        if not 0 < self.move_fraction <= 1:
+            raise ValueError("move_fraction は 0 より大きく 1 以下にしてください")
         if self.fault_mode not in ("none", "stuck", "random", "byzantine"):
             raise ValueError("fault_mode must be none, stuck, random, or byzantine")
         if self.attack_strategy not in ("split", "random", "inside"):
@@ -109,6 +120,15 @@ def retained_indices(own, neighbor_values, f):
     return np.flatnonzero(keep)
 
 
+def _validated_reports(positions, received_positions):
+    if received_positions is None:
+        return None
+    reports = np.asarray(received_positions, dtype=float)
+    if reports.shape != (len(positions), len(positions), 2) or not np.all(np.isfinite(reports)):
+        raise ValueError("received_positions must be finite with shape (n, n, 2)")
+    return reports
+
+
 def wmsr_step(positions, f, radius, received_positions=None):
     """Compute all candidates from the SAME old state; retain own on both axes.
 
@@ -122,11 +142,7 @@ def wmsr_step(positions, f, radius, received_positions=None):
     if isinstance(f, bool) or not isinstance(f, int) or not 0 <= f < len(positions):
         raise ValueError("require integer 0 <= f < n")
     graph = radius_graph(positions, radius)
-    reports = None
-    if received_positions is not None:
-        reports = np.asarray(received_positions, dtype=float)
-        if reports.shape != (len(positions), len(positions), 2) or not np.all(np.isfinite(reports)):
-            raise ValueError("received_positions must be finite with shape (n, n, 2)")
+    reports = _validated_reports(positions, received_positions)
     updated = positions.copy()
     for i in range(len(positions)):
         neighbors = np.flatnonzero(graph[i])
@@ -138,6 +154,21 @@ def wmsr_step(positions, f, radius, received_positions=None):
             selected = np.concatenate(([positions[i, axis]], values[retained]))
             updated[i, axis] = np.mean(selected)
     return updated
+
+
+def mec_targets(positions, radius, received_positions=None):
+    """Compute each agent's circle from its true own position and all visible reports."""
+    positions = _positions(positions)
+    graph = radius_graph(positions, radius)
+    reports = _validated_reports(positions, received_positions)
+    centers = np.empty_like(positions)
+    radii = np.empty(len(positions))
+    for i in range(len(positions)):
+        neighbors = np.flatnonzero(graph[i])
+        visible = positions[neighbors] if reports is None else reports[i, neighbors]
+        points = np.vstack((positions[i], visible))
+        centers[i], radii[i] = minimum_enclosing_circle(points)
+    return centers, radii
 
 
 def component_count(graph):
@@ -167,6 +198,8 @@ class Result:
     components: np.ndarray  # whole visibility graph
     box_violation: np.ndarray  # normal coordinates outside initial normal box
     fault_reports: np.ndarray  # (steps, receivers, faulty senders, 2); ID order ascending
+    circle_centers: Optional[np.ndarray] = None  # (steps, n, 2), MEC only
+    circle_radii: Optional[np.ndarray] = None  # (steps, n), MEC only
 
     def summary(self):
         below = self.diameter <= self.config.tolerance
@@ -213,6 +246,10 @@ def simulate(config=Config(), initial_positions=None):
     normal = ~faulty
     history = np.empty((config.steps + 1, config.n, 2))
     fault_reports = np.empty((config.steps, config.n, config.fault_count, 2))
+    circle_centers = circle_radii = None
+    if config.algorithm == "mec":
+        circle_centers = np.empty((config.steps, config.n, 2))
+        circle_radii = np.empty((config.steps, config.n))
     history[0] = initial
     for k in range(config.steps):
         old = history[k]
@@ -234,7 +271,13 @@ def simulate(config=Config(), initial_positions=None):
                              else upper + config.attack_amplitude)
                     reports[receiver, faulty] = value
         fault_reports[k] = reports[:, faulty, :]
-        new = wmsr_step(old, config.f, config.radius, reports)
+        if circle_centers is None:
+            new = wmsr_step(old, config.f, config.radius, reports)
+        else:
+            centers, radii = mec_targets(old, config.radius, reports)
+            circle_centers[k], circle_radii[k] = centers, radii
+            fraction = config.move_fraction
+            new = (1 - fraction) * old + fraction * centers
         if config.fault_mode == "random":
             angles = fault_rng.uniform(0, 2 * np.pi, config.fault_count)
             displacement = config.fault_step * np.column_stack((np.cos(angles), np.sin(angles)))
@@ -264,4 +307,4 @@ def simulate(config=Config(), initial_positions=None):
         components[k] = component_count(graph)
         violations[k] = max(0.0, float(np.max(lower - good)), float(np.max(good - upper)))
     return Result(config, history, faulty, diameter, spans, centroids, degrees,
-                  components, violations, fault_reports)
+                  components, violations, fault_reports, circle_centers, circle_radii)

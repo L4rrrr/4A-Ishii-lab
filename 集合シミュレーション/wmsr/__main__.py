@@ -8,7 +8,7 @@ from importlib.metadata import version
 
 import numpy as np
 
-from .simulation import Config, radius_graph, simulate
+from .simulation import ALGORITHM_NAMES, FAULT_NAMES, Config, radius_graph, simulate
 
 
 def save_result(result, directory, gif=False, stride=2):
@@ -21,8 +21,17 @@ def save_result(result, directory, gif=False, stride=2):
                                "matplotlib": version("matplotlib"), "pillow": version("Pillow")}}
     (directory / "run.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
                                         encoding="utf-8")
-    np.savez_compressed(directory / "history.npz", positions=result.positions, faulty=result.faulty,
-                        fault_reports=result.fault_reports)
+    history = {"positions": result.positions, "faulty": result.faulty,
+               "fault_reports": result.fault_reports}
+    if result.circle_centers is not None:
+        history.update(circle_centers=result.circle_centers, circle_radii=result.circle_radii)
+        with (directory / "最小包含円.csv").open("w", newline="", encoding="utf-8-sig") as file:
+            writer = csv.writer(file)
+            writer.writerow(["更新ステップ", "正常機ID", "中心x座標 [m]", "中心y座標 [m]", "半径 [m]"])
+            for k, centers in enumerate(result.circle_centers):
+                for i in np.flatnonzero(~result.faulty):
+                    writer.writerow([k, i, *centers[i], result.circle_radii[k, i]])
+    np.savez_compressed(directory / "history.npz", **history)
     with (directory / "fault_messages.csv").open("w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
         writer.writerow(["step", "receiver_id", "sender_id", "receiver_faulty", "visible",
@@ -53,13 +62,18 @@ def save_result(result, directory, gif=False, stride=2):
     plot_messages(result, directory / "attack_messages.png")
     if gif:
         save_animation(result, directory / "animation.gif", stride=stride)
-    print(f"Saved: {directory.resolve()}")
-    print(json.dumps(result.summary(), indent=2, ensure_ascii=False))
+    step = payload["summary"]["within_tolerance_through_remaining_recorded_steps_from"]
+    outcome = f"ステップ {step} からしきい値以下" if step is not None else "最終時刻でしきい値未達"
+    print(f"保存先：{directory.resolve()}")
+    print(f"正常機間の最終最大距離：{result.diameter[-1]:.6g} m（{outcome}）")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="2D coordinate-wise W-MSR robot gathering")
-    parser.add_argument("--config", type=Path, help="JSON configuration; CLI values override it")
+    parser = argparse.ArgumentParser(description="W-MSRと最小包含円による2次元集合シミュレーション")
+    parser.add_argument("--config", type=Path, help="JSON設定ファイル。コマンドの指定が優先")
+    parser.add_argument("--algorithm", choices=ALGORITHM_NAMES, help="wmsr（既定）または mec（最小包含円）")
+    parser.add_argument("--move-fraction", type=float, help="最小包含円の中心まで進む割合（既定1）")
+    parser.add_argument("--compare", action="store_true", help="同じ初期配置で両方のアルゴリズムを比較")
     parser.add_argument("--n", type=int)
     parser.add_argument("--f", type=int, help="known fault upper bound, independent of actual count")
     parser.add_argument("--r", dest="radius", type=float, help="visibility radius [m]")
@@ -74,10 +88,10 @@ def main():
     parser.add_argument("--attack-amplitude", type=float, help="false report offset [m], split/random only")
     parser.add_argument("--tolerance", type=float, help="normal diameter threshold [m]")
     parser.add_argument("--initial", type=Path, help="headerless x,y CSV, one agent per row (must match n)")
-    parser.add_argument("--out", type=Path, default=Path("results/run"))
-    parser.add_argument("--gif", action="store_true", help="also save animation.gif")
-    parser.add_argument("--gif-stride", type=int, default=2, help="animation frame spacing in steps")
-    parser.add_argument("--demo", action="store_true", help="same initial positions: no faults / Byzantine / stuck / random")
+    parser.add_argument("--out", type=Path, help="出力先（既定は実験結果の下）")
+    parser.add_argument("--gif", action="store_true", help="アニメーションも保存")
+    parser.add_argument("--gif-stride", type=int, default=2, help="GIFのステップ間隔")
+    parser.add_argument("--demo", action="store_true", help="故障なし、ビザンチン、停止、ランダム移動を比較")
     args = parser.parse_args()
     try:
         data = json.loads(args.config.read_text(encoding="utf-8")) if args.config else {}
@@ -107,18 +121,29 @@ def main():
             count = config.fault_count or 1
             ids = config.faulty_ids or tuple(range(count))
             scenarios = [
-                ("no_faults", replace(config, fault_count=0, faulty_ids=(), fault_mode="none")),
-                ("byzantine", replace(config, fault_count=count, faulty_ids=ids, fault_mode="byzantine")),
-                ("stuck", replace(config, fault_count=count, faulty_ids=ids, fault_mode="stuck")),
-                ("random", replace(config, fault_count=count, faulty_ids=ids, fault_mode="random")),
+                (FAULT_NAMES["none"], replace(config, fault_count=0, faulty_ids=(), fault_mode="none")),
+                (FAULT_NAMES["byzantine"], replace(config, fault_count=count, faulty_ids=ids, fault_mode="byzantine")),
+                (FAULT_NAMES["stuck"], replace(config, fault_count=count, faulty_ids=ids, fault_mode="stuck")),
+                (FAULT_NAMES["random"], replace(config, fault_count=count, faulty_ids=ids, fault_mode="random")),
             ]
         else:
             scenarios = [(None, config)]
         # Compute and validate all scenarios before writing any result files.
-        results = [(name, simulate(c, initial)) for name, c in scenarios]
-        for name, result in results:
-            directory = args.out / name if name else args.out
-            save_result(result, directory, args.gif, args.gif_stride)
+        algorithms = tuple(ALGORITHM_NAMES) if args.compare else (config.algorithm,)
+        groups = [(name, [simulate(replace(c, algorithm=algorithm), initial) for algorithm in algorithms])
+                  for name, c in scenarios]
+        from .plotting import configure_japanese_font, plot_comparison
+
+        configure_japanese_font()
+        base_name = "比較" if args.compare else ALGORITHM_NAMES[config.algorithm]
+        out = args.out if args.out else Path("実験結果") / base_name
+        for name, results in groups:
+            directory = out / name if name else out
+            for result in results:
+                destination = directory / ALGORITHM_NAMES[result.config.algorithm] if args.compare else directory
+                save_result(result, destination, args.gif, args.gif_stride)
+            if args.compare:
+                plot_comparison(results, directory / "比較グラフ.png")
     except (ValueError, TypeError, OSError) as exc:
         parser.error(str(exc))
 

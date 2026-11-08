@@ -1,6 +1,6 @@
-# 2次元ロボットの集合問題：座標ごとのW-MSR
+# 2次元ロボットの集合シミュレーション
 
-半径 `r [m]` 以内の近傍だけを使い、x座標・y座標を独立にW-MSRで更新するPythonシミュレーションです。
+半径 `r [m]` 以内の近傍を使う、座標ごとのW-MSRと最小包含円による集合を比較するPythonシミュレーションです。
 故障なし、Byzantine（相手ごとに異なる虚偽座標を送信）、停止、ランダム移動を比較できます。
 
 ## すぐに実行
@@ -15,12 +15,34 @@ python -m pip install -r requirements.txt
 # n=20、故障上限f=1、実際のByzantine故障1体、視認半径6m
 python -m wmsr --n 20 --f 1 --r 6 --fault-count 1 --fault-mode byzantine --gif
 
-# 同じ初期配置・同じfで、故障なし / Byzantine / 停止 / ランダム移動を比較
-python -m wmsr --demo --n 20 --f 1 --r 6 --steps 100 --gif --out results/demo
+# 故障なしで、最小包含円の中心へ移動
+python -m wmsr --algorithm mec --n 20 --r 6 --gif --gif-stride 1
+
+# 同じ初期配置・同じfで、両手法を4種類の故障条件で比較
+python -m wmsr --compare --demo --n 20 --f 1 --r 6 --steps 100 --gif
 ```
 
 Windowsでは `python3` を `python`、仮想環境の有効化を `.venv\Scripts\activate` に置き換えてください。
 GIFはPillowで生成するため、ffmpegは不要です。グラフはファイルに保存し、画面ウィンドウは開きません。
+日本語表示にはシステムの日本語フォントを使います。macOSのヒラギノ角ゴ、Windowsの游ゴシックに対応します。
+Ubuntuで日本語フォントが見つからない場合は `sudo apt install fonts-noto-cjk` で追加できます。
+
+## 最小包含円による更新
+
+正常機iは、更新前の自分の実位置と、距離r以内の全近傍から受け取った座標を含む最小の円を求めます。その中心を `c_i(k)` とすると、次の位置は `p_i(k+1) = (1-α)p_i(k) + αc_i(k)` です。
+`--move-fraction` がαで、既定の1では中心まで移動します。0.5なら中心との中点に移動します。全機が同じ時刻の位置を使って同時に更新します。
+
+- すべての点が同じなら、円の半径は0で、その位置が中心です。近傍なしもこの場合に当たります。
+- 最も遠い2点を直径とする円に全点が入れば、その円を使います。直線上の点や鈍角三角形もこの場合です。
+- その円に入りきらなければ、一直線上にない3点の外接円を調べ、全点を含む最小の円を選びます。
+
+最小包含円ではfによる除去を行わないので、虚偽座標も円の計算に入り、中心が正常機の範囲から離れることがあります。
+視認距離の判定は実位置に基づきます。中心へ進む際の連結性を維持する制約は設けていません。
+本実装の候補の全探索は近傍点数をmとして最悪 O(m⁴) です。計算手順を確認しやすい小規模な実験用です。
+
+`--compare` は配置、故障機ID、乱数シードを両手法で揃え、正常機間の最大距離と、全体の視認グラフの連結成分数を比較します。
+ビザンチンの `split` と `inside` は各手法の現在の正常座標を参照するため、位置が分かれた後の虚偽値も手法ごとに変化します。
+結果の数値は [実行例](RESULTS.md) にあります。
 
 ## モデルと更新式
 
@@ -91,16 +113,16 @@ Byzantineモデルでは「実位置から距離を判定できるが、位置�
 
 ```sh
 # 故障IDを明示する例（0始まり、故障数はIDリストから設定）
-python -m wmsr --n 20 --f 2 --r 6 --faulty-ids 0,3 --fault-mode byzantine --attack-strategy inside --out results/inside
+python -m wmsr --n 20 --f 2 --r 6 --faulty-ids 0,3 --fault-mode byzantine --attack-strategy inside --out 実験結果/正常範囲内の攻撃
 
 # 実際の故障なし。ただしf=1としてフィルタは続ける
-python -m wmsr --f 1 --fault-count 0 --fault-mode none --out results/no_faults
+python -m wmsr --f 1 --fault-count 0 --fault-mode none --out 実験結果/故障なし
 
 # 故障を想定しない通常の平均との比較
-python -m wmsr --f 0 --fault-count 0 --fault-mode none --out results/ordinary_mean
+python -m wmsr --f 0 --fault-count 0 --fault-mode none --out 実験結果/通常の平均
 
 # JSONの設定を使う。コマンドライン指定がJSONより優先
-python -m wmsr --config config.example.json --steps 200 --gif --out results/custom
+python -m wmsr --config config.example.json --steps 200 --gif --out 実験結果/設定ファイル実験
 ```
 
 `--demo` の故障あり条件の故障数は、指定があればその数、0なら1です。`--demo` にはf>=1が必要です。
@@ -125,7 +147,10 @@ python -m wmsr --config config.example.json --steps 200 --gif --out results/cust
 | `--attack-amplitude` | 虚偽値の振幅A [m] | 20 |
 | `--tolerance` | 正常側の最大距離による集合判定 [m] | 0.001 |
 | `--initial` | 初期位置のヘッダーなしx,y CSV | seedで生成 |
-| `--out` | 出力フォルダ | results/run |
+| `--algorithm` | `wmsr` または `mec` | wmsr |
+| `--move-fraction` | 最小包含円の中心まで進む割合 | 1 |
+| `--compare` | 同じ初期配置で両手法を実行 | 指定時のみ |
+| `--out` | 出力フォルダ | 実験結果/手法名 または 実験結果/比較 |
 | `--gif` | アニメーションも保存 | 指定時のみ |
 | `--gif-stride` | GIFに使うステップ間隔 | 2 |
 
@@ -137,6 +162,8 @@ python -m wmsr --config config.example.json --steps 200 --gif --out results/cust
 | ファイル | 内容 |
 |---|---|
 | `overview.png` | 2次元軌跡、x/yの時系列、正常側の最大距離 |
+| `比較グラフ.png` | 比較時のみ。2手法の最大距離と全体の連結成分数 |
+| `最小包含円.csv` | 最小包含円を使った場合のみ。正常機ごとの円の中心・半径 |
 | `animation.gif` | 実位置と距離rに基づく視認グラフ。青：正常、赤×：故障。破線円：正常機1体の視認半径 |
 | `attack_messages.png` | Byzantine時のみ。可視回数の多い正常受信者を偶奇から1体ずつ選んだ虚偽値と、正常側の座標範囲・故障機の実位置。最後の可視メッセージ付近までを表示 |
 | `positions.csv` | 全時刻の実位置。step, agent_id, faulty, x_m, y_m |
@@ -147,7 +174,9 @@ python -m wmsr --config config.example.json --steps 200 --gif --out results/cust
 
 `fault_reports` の送信者方向は故障IDの昇順で、`faulty` から対応するIDを取得できます。
 送信候補値は不可視の相手や故障機自身宛てにも記録しますが、自己ループはなく、実際の正常更新に使うのは可視の故障送信者から正常受信者への値だけです。
-GIFの線は通信が可能な近傍を示し、フィルタ後の採用関係ではありません。GIFには虚偽座標を物理位置として表示しません。
+GIFの灰色の線は通信が可能な近傍を示します。最小包含円では、代表する正常機1体の円と中心を緑色で示します。
+表示範囲は実位置に合わせているため、大きな虚偽座標による円の一部は画面外になることがあります。
+比較結果の例は `実験結果/比較/故障なし/最小包含円/` と `実験結果/比較/故障なし/比較グラフ.png` です。
 同じ `--out` を再利用すると同名ファイルを上書きするため、条件ごとに出力先を分けてください。
 
 正常機集合をHとし、各時刻で次を計算します。
@@ -209,7 +238,7 @@ GitHub Actionsも同じテストと短いGIF生成を実行します。
 
 ## GitHubでの管理
 
-GitHubでは [L4rrrr/4A-Ishii-lab](https://github.com/L4rrrr/4A-Ishii-lab) の `wmsr-gathering/` にコードを配置します。
+GitHubでは [L4rrrr/4A-Ishii-lab](https://github.com/L4rrrr/4A-Ishii-lab) の `集合シミュレーション/` にコードを配置します。
 GitHubのコードを取得して編集する手順は [GITHUB_SETUP.md](GITHUB_SETUP.md) を参照してください。
 
 ## 参考文献
@@ -219,3 +248,6 @@ H. J. LeBlanc, H. Zhang, X. Koutsoukos, S. Sundaram,
 [原著論文PDF](https://cs.vuse.vanderbilt.edu/koutsoxd/www/Publications/resilientConsensusJSAC2013.pdf)
 （特にSection IIIのW-MSR定義）。本実装はそのスカラー更新を各軸に適用したシミュレーションであり、
 この移動ロボット系の収束定理を主張するものではありません。
+
+最小包含円の支持点については [Welzl, Smallest Enclosing Disks (Balls and Ellipsoids)](https://doi.org/10.1007/BFB0038202)、
+近傍関係を保つ制約付きの集合アルゴリズムについては [Bullo・Cortés・Martínez, Distributed Control of Robotic Networks, 第4章](https://motion.me.ucsb.edu/book-dcrn/pdfs/DCRN-BulloCortesMartinez-chapter4.pdf) を参照してください。

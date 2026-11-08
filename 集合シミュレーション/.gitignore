@@ -5,3 +5,4 @@ __pycache__/
 .mplconfig/
 .DS_Store
 results/
+実験結果/

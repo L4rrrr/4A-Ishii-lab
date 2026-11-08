@@ -1,5 +1,28 @@
 # 実行例（2026-11-08）
 
+## 最小包含円とW-MSRの比較
+
+n=20、f=1、r=6m、乱数シード7、初期正方形10m×10m、100ステップ、しきい値1mm。
+最小包含円は毎回中心まで移動します。故障ありは1体（ID=0）です。
+表のステップは、正常機間の最大距離Dが最終時刻まで1mm以下になる最初の時刻です。
+
+| 条件 | W-MSR | 最小包含円 |
+|---|---:|---:|
+| 故障なし | 5 | 3 |
+| ビザンチン故障（split、振幅20m） | 5 | 未達（最終Dは約49.2m） |
+| 停止故障 | 5 | 4 |
+| ランダム移動故障 | 5 | 4 |
+
+このビザンチン条件では、虚偽値を含めた円を目指す最小包含円方式で視認グラフが最大5成分に分かれました。
+
+```sh
+python -m wmsr --compare --demo --n 20 --f 1 --r 6 --steps 100 --gif
+```
+
+比較図と各手法の結果は `実験結果/比較/` に保存されます。
+
+## W-MSRの実行例
+
 共通条件はn=20、f=1、初期正方形10m×10m、seed=7、更新100回、集合しきい値1mmです。
 故障あり条件はID=0の1体です。正常側の最大距離はD(k)で評価します。
 
@@ -21,11 +44,11 @@ r=1mでは視認グラフが11成分に分かれ、正常側の最大距離は�
 ## 再現コマンド
 
 ```sh
-python -m wmsr --n 20 --f 1 --r 6 --steps 100 --demo --gif --out results/demo
-python -m wmsr --n 20 --f 1 --r 15 --steps 100 --fault-count 1 --fault-mode byzantine --attack-strategy inside --out results/byzantine_inside
-python -m wmsr --n 20 --f 1 --r 1 --steps 100 --fault-count 1 --fault-mode byzantine --out results/disconnected
+python -m wmsr --n 20 --f 1 --r 6 --steps 100 --demo --gif --out 実験結果/W-MSRの比較
+python -m wmsr --n 20 --f 1 --r 15 --steps 100 --fault-count 1 --fault-mode byzantine --attack-strategy inside --out 実験結果/正常範囲内の攻撃
+python -m wmsr --n 20 --f 1 --r 1 --steps 100 --fault-count 1 --fault-mode byzantine --out 実験結果/半径不足
 ```
 
 実行環境：Python 3.9.6、NumPy 2.0.2、Matplotlib 3.9.4、Pillow 11.2.1。
 19件の単体テストを通過し、CLIからJSON設定の読み込み、図・GIF・CSV・NPZの生成も実行しました。
-生成結果はローカルの `results/` にあります。コードのGit管理からは除外しています。
+生成結果はローカルの `実験結果/` にあります。コードのGit管理からは除外しています。

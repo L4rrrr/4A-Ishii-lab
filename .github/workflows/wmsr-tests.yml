@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: wmsr-gathering
+        working-directory: 集合シミュレーション
     strategy:
       matrix:
         python-version: ['3.9', '3.12']
@@ -17,5 +17,6 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -r requirements.txt
+      - run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
       - run: python -m unittest discover -s tests -v
-      - run: python -m wmsr --n 8 --f 1 --r 15 --steps 4 --demo --gif --out results/smoke
+      - run: python -m wmsr --n 8 --f 1 --r 15 --steps 4 --compare --demo --gif --out 実験結果/動作確認

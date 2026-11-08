@@ -1,7 +1,7 @@
 # GitHubでの管理
 
 対象リポジトリは [L4rrrr/4A-Ishii-lab](https://github.com/L4rrrr/4A-Ishii-lab) です。
-シミュレーションの作業フォルダは `wmsr-gathering/` です。
+シミュレーションの作業フォルダは `集合シミュレーション/` です。
 
 ## GitHubから取得
 
@@ -9,7 +9,7 @@
 
 ```sh
 git clone https://github.com/L4rrrr/4A-Ishii-lab.git
-cd 4A-Ishii-lab/wmsr-gathering
+cd 4A-Ishii-lab/集合シミュレーション
 ```
 
 Pythonのセットアップと実行コマンドは [README.md](README.md) を参照してください。
