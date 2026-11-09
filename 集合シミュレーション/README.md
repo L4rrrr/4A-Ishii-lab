@@ -240,6 +240,8 @@ GitHub Actionsも同じテストと短いGIF生成を実行します。
 
 GitHubでは [L4rrrr/4A-Ishii-lab](https://github.com/L4rrrr/4A-Ishii-lab) の `集合シミュレーション/` にコードを配置します。
 GitHubのコードを取得して編集する手順は [GITHUB_SETUP.md](GITHUB_SETUP.md) を参照してください。
+掲載した画像とGIFは [共有結果](共有結果/README.md) から見られます。
+新しい実験の画像を追加する方法は [実験結果の画像を追加](GITHUB_SETUP.md#実験結果の画像を追加) を参照してください。
 
 ## 参考文献
 

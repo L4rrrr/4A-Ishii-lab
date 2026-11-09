@@ -6,3 +6,4 @@ __pycache__/
 .DS_Store
 results/
 実験結果/
+共有結果/.共有準備-*/
