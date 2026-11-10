@@ -1,6 +1,6 @@
 # 2次元ロボットの集合シミュレーション
 
-半径 `r [m]` 以内の近傍を使う、座標ごとのW-MSRと最小包含円による集合を比較するPythonシミュレーションです。
+半径 `r [m]` 以内の近傍を使い、W-MSR、最小包含円、MEC中心の凸包による集合を試すPythonシミュレーションです。
 故障なし、Byzantine（相手ごとに異なる虚偽座標を送信）、停止、ランダム移動を比較できます。
 
 ## すぐに実行
@@ -24,6 +24,7 @@ python -m wmsr --compare --demo --n 20 --f 1 --r 6 --steps 100 --gif
 
 Windowsでは `python3` を `python`、仮想環境の有効化を `.venv\Scripts\activate` に置き換えてください。
 GIFはPillowで生成するため、ffmpegは不要です。グラフはファイルに保存し、画面ウィンドウは開きません。
+新しい比較は `--video` でMP4を保存できます。[MEC凸包の更新方法・動画・実験結果](MEC凸包の検証.md) に手順があります。
 日本語表示にはシステムの日本語フォントを使います。macOSのヒラギノ角ゴ、Windowsの游ゴシックに対応します。
 Ubuntuで日本語フォントが見つからない場合は `sudo apt install fonts-noto-cjk` で追加できます。
 
@@ -147,9 +148,11 @@ python -m wmsr --config config.example.json --steps 200 --gif --out 実験結果
 | `--attack-amplitude` | 虚偽値の振幅A [m] | 20 |
 | `--tolerance` | 正常側の最大距離による集合判定 [m] | 0.001 |
 | `--initial` | 初期位置のヘッダーなしx,y CSV | seedで生成 |
-| `--algorithm` | `wmsr` または `mec` | wmsr |
-| `--move-fraction` | 最小包含円の中心まで進む割合 | 1 |
-| `--compare` | 同じ初期配置で両手法を実行 | 指定時のみ |
+| `--algorithm` | `wmsr`、`mec`、`mec-hull`、`mec-hull-safe` | wmsr |
+| `--move-fraction` | MEC系の目標点まで進む割合 | 1 |
+| `--compare` | 同じ初期配置でW-MSRと最小包含円を実行 | 指定時のみ |
+| `--compare-hulls` | 最小包含円、MEC中心の凸包、安全領域つき凸包を比較 | 指定時のみ |
+| `--video` | 日本語のMP4を保存（FFmpegまたはOpenCVが必要） | 指定時のみ |
 | `--out` | 出力フォルダ | 実験結果/手法名 または 実験結果/比較 |
 | `--gif` | アニメーションも保存 | 指定時のみ |
 | `--gif-stride` | GIFに使うステップ間隔 | 2 |

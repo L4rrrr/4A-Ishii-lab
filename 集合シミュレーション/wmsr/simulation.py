@@ -6,8 +6,10 @@ from typing import Optional, Tuple
 import numpy as np
 
 from .circle import minimum_enclosing_circle
+from .hull import convex_hull, distance_to_hull, guarded_hull
 
-ALGORITHM_NAMES = {"wmsr": "W-MSR", "mec": "最小包含円"}
+ALGORITHM_NAMES = {"wmsr": "W-MSR", "mec": "最小包含円",
+                   "mec-hull": "MEC中心の凸包", "mec-hull-safe": "安全領域つき凸包"}
 FAULT_NAMES = {"none": "故障なし", "byzantine": "ビザンチン故障", "stuck": "停止故障", "random": "ランダム移動故障"}
 
 
@@ -47,7 +49,7 @@ class Config:
         if self.box_size == 0 or self.tolerance == 0:
             raise ValueError("box_size and tolerance must be positive")
         if self.algorithm not in ALGORITHM_NAMES:
-            raise ValueError("algorithm は wmsr または mec を指定してください")
+            raise ValueError(f"algorithm は {', '.join(ALGORITHM_NAMES)} から指定してください")
         if not 0 < self.move_fraction <= 1:
             raise ValueError("move_fraction は 0 より大きく 1 以下にしてください")
         if self.fault_mode not in ("none", "stuck", "random", "byzantine"):
@@ -171,6 +173,40 @@ def mec_targets(positions, radius, received_positions=None):
     return centers, radii
 
 
+def _byzantine_reports(values, config, faulty, rng):
+    """One message per sender and recipient, preserving the existing attack modes."""
+    reports = np.broadcast_to(values, (config.n, config.n, 2)).copy()
+    if config.fault_mode != "byzantine" or not faulty.any():
+        return reports
+    lower, upper = values[~faulty].min(axis=0), values[~faulty].max(axis=0)
+    for receiver in range(config.n):
+        if config.attack_strategy == "random":
+            reports[receiver, faulty] = values[faulty] + rng.uniform(
+                -config.attack_amplitude, config.attack_amplitude, (config.fault_count, 2))
+        elif config.attack_strategy == "inside":
+            fraction = 0.25 if receiver % 2 == 0 else 0.75
+            reports[receiver, faulty] = lower + fraction * (upper - lower)
+        else:
+            reports[receiver, faulty] = (lower - config.attack_amplitude if receiver % 2 == 0
+                                         else upper + config.attack_amplitude)
+    return reports
+
+
+def _hull_targets(positions, centers, graph, position_reports, center_reports, f, guarded):
+    targets = np.empty_like(positions)
+    held = np.zeros(len(positions), dtype=bool)
+    for i, visible in enumerate(graph):
+        values = np.vstack((centers[i], center_reports[i, visible]))
+        if not guarded:
+            targets[i] = values.mean(axis=0)
+            continue
+        local_positions = np.vstack((positions[i], position_reports[i, visible]))
+        region = guarded_hull(convex_hull(values), local_positions, f)
+        held[i] = not len(region)
+        targets[i] = positions[i] if held[i] else region.mean(axis=0)
+    return targets, held
+
+
 def component_count(graph):
     """Connected components of the undirected visibility graph."""
     unseen = set(range(len(graph)))
@@ -200,6 +236,10 @@ class Result:
     fault_reports: np.ndarray  # (steps, receivers, faulty senders, 2); ID order ascending
     circle_centers: Optional[np.ndarray] = None  # (steps, n, 2), MEC only
     circle_radii: Optional[np.ndarray] = None  # (steps, n), MEC only
+    hull_violation: Optional[np.ndarray] = None  # distance outside initial normal convex hull
+    update_targets: Optional[np.ndarray] = None  # (steps, n, 2), center-hull methods
+    center_fault_reports: Optional[np.ndarray] = None  # same layout as fault_reports
+    held: Optional[np.ndarray] = None  # empty guarded region at this update
 
     def summary(self):
         below = self.diameter <= self.config.tolerance
@@ -207,7 +247,7 @@ class Result:
         # This describes only the finite simulation horizon, not a proof.
         suffix_below = np.logical_and.accumulate(below[::-1])[::-1]
         hits = np.flatnonzero(suffix_below)
-        return {
+        summary = {
             "normal_count": int((~self.faulty).sum()),
             "faulty_ids": np.flatnonzero(self.faulty).tolist(),
             "initial_normal_diameter_m": float(self.diameter[0]),
@@ -221,6 +261,11 @@ class Result:
             "max_visibility_components": int(self.components.max()),
             "note": "Finite-horizon observation; graph robustness is not certified.",
         }
+        if self.hull_violation is not None:
+            summary["max_initial_normal_hull_violation_m"] = float(self.hull_violation.max())
+        if self.held is not None:
+            summary["normal_empty_guard_updates"] = int(self.held[:, ~self.faulty].sum())
+        return summary
 
 
 def simulate(config=Config(), initial_positions=None):
@@ -233,9 +278,10 @@ def simulate(config=Config(), initial_positions=None):
     not perfect direct observation of true physical coordinates.
     No collisions or physical dynamics are modeled.
     """
-    initial_seed, fault_seed = np.random.SeedSequence(config.seed).spawn(2)
+    initial_seed, fault_seed, center_seed = np.random.SeedSequence(config.seed).spawn(3)
     initial_rng = np.random.default_rng(initial_seed)
     fault_rng = np.random.default_rng(fault_seed)
+    center_rng = np.random.default_rng(center_seed)
     if initial_positions is None:
         initial = initial_rng.uniform(0, config.box_size, (config.n, 2))
     else:
@@ -247,37 +293,39 @@ def simulate(config=Config(), initial_positions=None):
     history = np.empty((config.steps + 1, config.n, 2))
     fault_reports = np.empty((config.steps, config.n, config.fault_count, 2))
     circle_centers = circle_radii = None
-    if config.algorithm == "mec":
+    if config.algorithm != "wmsr":
         circle_centers = np.empty((config.steps, config.n, 2))
         circle_radii = np.empty((config.steps, config.n))
+    targets_history = center_fault_history = held_history = None
+    if config.algorithm in ("mec-hull", "mec-hull-safe"):
+        targets_history = np.empty_like(circle_centers)
+        center_fault_history = np.empty_like(fault_reports)
+    if config.algorithm == "mec-hull-safe":
+        held_history = np.zeros((config.steps, config.n), dtype=bool)
     history[0] = initial
     for k in range(config.steps):
         old = history[k]
-        reports = np.broadcast_to(old, (config.n, config.n, 2)).copy()
-        if config.fault_mode == "byzantine":
-            lower, upper = old[normal].min(axis=0), old[normal].max(axis=0)
-            for receiver in range(config.n):
-                if config.attack_strategy == "random":
-                    reports[receiver, faulty] = old[faulty] + fault_rng.uniform(
-                        -config.attack_amplitude, config.attack_amplitude,
-                        (config.fault_count, 2))
-                elif config.attack_strategy == "inside":
-                    # Full-information attacker: stay inside the current normal
-                    # coordinate box, but send different values to two groups.
-                    fraction = 0.25 if receiver % 2 == 0 else 0.75
-                    reports[receiver, faulty] = lower + fraction * (upper - lower)
-                else:
-                    value = (lower - config.attack_amplitude if receiver % 2 == 0
-                             else upper + config.attack_amplitude)
-                    reports[receiver, faulty] = value
+        reports = _byzantine_reports(old, config, faulty, fault_rng)
         fault_reports[k] = reports[:, faulty, :]
         if circle_centers is None:
             new = wmsr_step(old, config.f, config.radius, reports)
         else:
             centers, radii = mec_targets(old, config.radius, reports)
             circle_centers[k], circle_radii[k] = centers, radii
+            targets = centers
+            if targets_history is not None:
+                center_reports = _byzantine_reports(centers, config, faulty, center_rng)
+                if not np.all(np.isfinite(center_reports)):
+                    raise ValueError("MEC中心の報告に有限でない値があります")
+                targets, held = _hull_targets(old, centers, radius_graph(old, config.radius),
+                                              reports, center_reports, config.f,
+                                              held_history is not None)
+                targets_history[k] = targets
+                center_fault_history[k] = center_reports[:, faulty, :]
+                if held_history is not None:
+                    held_history[k] = held
             fraction = config.move_fraction
-            new = (1 - fraction) * old + fraction * centers
+            new = (1 - fraction) * old + fraction * targets
         if config.fault_mode == "random":
             angles = fault_rng.uniform(0, 2 * np.pi, config.fault_count)
             displacement = config.fault_step * np.column_stack((np.cos(angles), np.sin(angles)))
@@ -295,6 +343,8 @@ def simulate(config=Config(), initial_positions=None):
     degrees = np.empty(length, dtype=int)
     components = np.empty(length, dtype=int)
     violations = np.empty(length)
+    hull_violations = np.empty(length)
+    initial_hull = convex_hull(initial[normal])
     lower, upper = initial[normal].min(axis=0), initial[normal].max(axis=0)
     for k, positions in enumerate(history):
         good = positions[normal]
@@ -306,5 +356,7 @@ def simulate(config=Config(), initial_positions=None):
         degrees[k] = graph.sum(axis=1)[normal].min()
         components[k] = component_count(graph)
         violations[k] = max(0.0, float(np.max(lower - good)), float(np.max(good - upper)))
+        hull_violations[k] = distance_to_hull(good, initial_hull).max()
     return Result(config, history, faulty, diameter, spans, centroids, degrees,
-                  components, violations, fault_reports, circle_centers, circle_radii)
+                  components, violations, fault_reports, circle_centers, circle_radii,
+                  hull_violations, targets_history, center_fault_history, held_history)

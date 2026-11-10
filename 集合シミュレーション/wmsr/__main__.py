@@ -31,6 +31,10 @@ def save_result(result, directory, gif=False, stride=2):
             for k, centers in enumerate(result.circle_centers):
                 for i in np.flatnonzero(~result.faulty):
                     writer.writerow([k, i, *centers[i], result.circle_radii[k, i]])
+    if result.update_targets is not None:
+        history.update(update_targets=result.update_targets, center_fault_reports=result.center_fault_reports)
+    if result.held is not None:
+        history["held"] = result.held
     np.savez_compressed(directory / "history.npz", **history)
     with (directory / "fault_messages.csv").open("w", newline="", encoding="utf-8") as file:
         writer = csv.writer(file)
@@ -53,11 +57,11 @@ def save_result(result, directory, gif=False, stride=2):
         writer = csv.writer(file)
         writer.writerow(["step", "normal_diameter_m", "normal_x_span_m", "normal_y_span_m",
                          "normal_centroid_x_m", "normal_centroid_y_m", "min_normal_degree",
-                         "visibility_components", "normal_box_violation_m"])
+                         "visibility_components", "normal_box_violation_m", "normal_hull_violation_m"])
         for k in range(len(result.positions)):
             writer.writerow([k, result.diameter[k], *result.axis_span[k],
                              *result.normal_centroid[k], result.min_normal_degree[k],
-                             result.components[k], result.box_violation[k]])
+                             result.components[k], result.box_violation[k], result.hull_violation[k]])
     plot_overview(result, directory / "overview.png")
     plot_messages(result, directory / "attack_messages.png")
     if gif:
@@ -69,11 +73,13 @@ def save_result(result, directory, gif=False, stride=2):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="W-MSRと最小包含円による2次元集合シミュレーション")
+    parser = argparse.ArgumentParser(description="W-MSR、最小包含円、MEC中心の凸包による2次元集合シミュレーション")
     parser.add_argument("--config", type=Path, help="JSON設定ファイル。コマンドの指定が優先")
-    parser.add_argument("--algorithm", choices=ALGORITHM_NAMES, help="wmsr（既定）または mec（最小包含円）")
-    parser.add_argument("--move-fraction", type=float, help="最小包含円の中心まで進む割合（既定1）")
-    parser.add_argument("--compare", action="store_true", help="同じ初期配置で両方のアルゴリズムを比較")
+    parser.add_argument("--algorithm", choices=ALGORITHM_NAMES, help="更新方法（既定 wmsr）")
+    parser.add_argument("--move-fraction", type=float, help="MEC系の目標点まで進む割合（既定1）")
+    comparison = parser.add_mutually_exclusive_group()
+    comparison.add_argument("--compare", action="store_true", help="W-MSRと最小包含円を比較")
+    comparison.add_argument("--compare-hulls", action="store_true", help="最小包含円、MEC中心の凸包、安全領域つき凸包を比較")
     parser.add_argument("--n", type=int)
     parser.add_argument("--f", type=int, help="known fault upper bound, independent of actual count")
     parser.add_argument("--r", dest="radius", type=float, help="visibility radius [m]")
@@ -90,6 +96,7 @@ def main():
     parser.add_argument("--initial", type=Path, help="headerless x,y CSV, one agent per row (must match n)")
     parser.add_argument("--out", type=Path, help="出力先（既定は実験結果の下）")
     parser.add_argument("--gif", action="store_true", help="アニメーションも保存")
+    parser.add_argument("--video", action="store_true", help="日本語のMP4動画も保存")
     parser.add_argument("--gif-stride", type=int, default=2, help="GIFのステップ間隔")
     parser.add_argument("--demo", action="store_true", help="故障なし、ビザンチン、停止、ランダム移動を比較")
     args = parser.parse_args()
@@ -129,21 +136,36 @@ def main():
         else:
             scenarios = [(None, config)]
         # Compute and validate all scenarios before writing any result files.
-        algorithms = tuple(ALGORITHM_NAMES) if args.compare else (config.algorithm,)
+        if args.compare_hulls:
+            algorithms = ("mec", "mec-hull", "mec-hull-safe")
+            base_name = "MEC凸包の比較"
+        elif args.compare:
+            algorithms = ("wmsr", "mec")
+            base_name = "比較"
+        else:
+            algorithms = (config.algorithm,)
+            base_name = ALGORITHM_NAMES[config.algorithm]
         groups = [(name, [simulate(replace(c, algorithm=algorithm), initial) for algorithm in algorithms])
                   for name, c in scenarios]
         from .plotting import configure_japanese_font, plot_comparison
 
         configure_japanese_font()
-        base_name = "比較" if args.compare else ALGORITHM_NAMES[config.algorithm]
+        if args.compare_hulls or args.video:
+            from .video import plot_hull_comparison, save_video
+
         out = args.out if args.out else Path("実験結果") / base_name
         for name, results in groups:
             directory = out / name if name else out
             for result in results:
-                destination = directory / ALGORITHM_NAMES[result.config.algorithm] if args.compare else directory
+                destination = directory / ALGORITHM_NAMES[result.config.algorithm] if len(results) > 1 else directory
                 save_result(result, destination, args.gif, args.gif_stride)
             if args.compare:
                 plot_comparison(results, directory / "比較グラフ.png")
+            if args.compare_hulls:
+                plot_hull_comparison(results, directory / "比較グラフ.png")
+            if args.video:
+                name = "集合の比較.mp4" if len(results) > 1 else "集合の動画.mp4"
+                save_video(results, directory / name)
     except (ValueError, TypeError, OSError) as exc:
         parser.error(str(exc))
 

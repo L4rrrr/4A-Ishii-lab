@@ -12,6 +12,8 @@ FIGURE_NAMES = {
     "overview.png": "軌跡と集合の進み具合",
     "attack_messages.png": "ビザンチン故障機の送信値",
     "animation.gif": "集合アニメーション",
+    "集合の比較.mp4": "集合の比較動画",
+    "集合の動画.mp4": "集合の動画",
 }
 
 
@@ -33,12 +35,13 @@ def share_results(source, experiment_name):
                    if p.name in (*FIGURE_NAMES, "run.json") and p.is_file() and not p.is_symlink())
     figures = [p for p in files if p.name in FIGURE_NAMES]
     if not figures:
-        raise ValueError(f"共有できるグラフやGIFがありません: {source}")
+        raise ValueError(f"共有できるグラフや動画がありません: {source}")
+    figures.sort(key=lambda p: p.suffix != ".mp4")
 
     def link(path, label):
         return f"[{label}]({quote(path.as_posix())})"
 
-    lines = [f"# {name}", "", "画像を選ぶと、グラフやアニメーションを表示できます。", ""]
+    lines = [f"# {name}", "", "リンクを選ぶと、グラフや動画を表示できます。", ""]
     for figure in figures:
         relative = figure.relative_to(source)
         folder = " / ".join(relative.parent.parts)
@@ -64,7 +67,7 @@ def share_results(source, experiment_name):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="生成したグラフとGIFをGitHub共有用にコピー")
+    parser = argparse.ArgumentParser(description="生成したグラフと動画をGitHub共有用にコピー")
     parser.add_argument("source", type=Path, help="実験結果のフォルダ")
     parser.add_argument("experiment_name", help="共有結果に付ける実験名")
     args = parser.parse_args()
