@@ -1,0 +1,44 @@
+{
+  "config": {
+    "n": 20,
+    "f": 1,
+    "radius": 15.0,
+    "steps": 100,
+    "seed": 7,
+    "box_size": 10.0,
+    "fault_count": 1,
+    "faulty_ids": null,
+    "fault_mode": "byzantine",
+    "fault_step": 1.0,
+    "attack_strategy": "split",
+    "attack_amplitude": 20.0,
+    "tolerance": 0.001,
+    "algorithm": "wmsr",
+    "move_fraction": 1.0
+  },
+  "summary": {
+    "normal_count": 19,
+    "faulty_ids": [
+      0
+    ],
+    "initial_normal_diameter_m": 12.395131580636354,
+    "final_normal_diameter_m": 0.0,
+    "tolerance_m": 0.001,
+    "within_tolerance_at_final_step": true,
+    "within_tolerance_through_remaining_recorded_steps_from": 4,
+    "final_normal_centroid_m": [
+      4.515618378470576,
+      5.93888926034802
+    ],
+    "max_initial_normal_box_violation_m": 0.0,
+    "max_visibility_components": 1,
+    "note": "Finite-horizon observation; graph robustness is not certified.",
+    "max_initial_normal_hull_violation_m": 0.0
+  },
+  "environment": {
+    "python": "3.9.6",
+    "numpy": "2.0.2",
+    "matplotlib": "3.9.4",
+    "pillow": "11.2.1"
+  }
+}

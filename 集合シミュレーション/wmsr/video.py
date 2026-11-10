@@ -12,7 +12,7 @@ from matplotlib.ticker import MaxNLocator
 
 from .hull import convex_hull
 from .plotting import fault_name
-from .simulation import ALGORITHM_NAMES, msr_center_mask, radius_graph
+from .simulation import ALGORITHM_NAMES, msr_center_mask, radius_graph, retained_indices
 
 
 COLORS = {"wmsr": "#4a61a7", "mec": "#aa491f", "mec-hull": "#196a9c",
@@ -21,13 +21,15 @@ NORMAL = "#25729e"
 FAULT = "#c84a3c"
 
 
-def _msr_panel(ax, result):
-    """Show the center reports and selected target of one normal receiver."""
-    reference = int(np.flatnonzero(~result.faulty)[0])
+def _reference_receiver(result):
     initial_graph = radius_graph(result.positions[0], result.config.radius)
     sees_fault = np.flatnonzero(~result.faulty & initial_graph[:, result.faulty].any(axis=1))
-    if len(sees_fault):
-        reference = int(sees_fault[0])
+    return int(sees_fault[0] if len(sees_fault) else np.flatnonzero(~result.faulty)[0])
+
+
+def _msr_panel(ax, result):
+    """Show the center reports and selected target of one normal receiver."""
+    reference = _reference_receiver(result)
     reports = result.circle_centers.copy()
     reports[:, result.faulty] = result.center_fault_reports[:, reference]
     points = reports.reshape(-1, 2) if len(reports) else result.positions[0]
@@ -72,6 +74,60 @@ def _msr_panel(ax, result):
     return draw
 
 
+def _wmsr_panel(ax, result):
+    """Show coordinate-wise trimming for one normal receiver."""
+    reference = _reference_receiver(result)
+    snapshots = []
+    for k, positions in enumerate(result.positions[:-1]):
+        visible = radius_graph(positions, result.config.radius)[reference]
+        reports = positions.copy()
+        reports[result.faulty] = result.fault_reports[k, reference]
+        snapshots.append((positions[reference], reports[visible]))
+    values = np.concatenate([np.vstack((own, reports)) for own, reports in snapshots]) \
+        if snapshots else result.positions[0]
+    low, high = values.min(), values.max()
+    pad = max(float(high - low) * .08, .5)
+    ax.set(xlim=(low - pad, high + pad), ylim=(-.6, 1.6), xlabel="座標値 [m]",
+           yticks=[0, 1], yticklabels=["y座標", "x座標"],
+           title=f"正常機 {reference} の座標ごとの選別")
+    ax.grid(axis="x", color="#e0e6ed", lw=.7)
+    ax.set_axisbelow(True)
+    for y in (0, 1):
+        ax.axhline(y, color="#c9d3de", lw=.8)
+    removed = ax.scatter([], [], s=65, color="#9b6c3e", marker="x", label="除いた値", zorder=4)
+    kept = ax.scatter([], [], s=64, facecolors="none", edgecolors="#4a61a7", label="残った近傍値", zorder=5)
+    own_mark = ax.scatter([], [], s=55, color="#17283b", marker="D", label="自分の値", zorder=6)
+    target = ax.scatter([], [], s=110, color="#137b5a", marker="*", label="平均（移動先）", zorder=7)
+    caption = ax.text(.03, .96, "", transform=ax.transAxes, va="top", fontsize=10,
+                      bbox={"facecolor": "white", "alpha": .9, "edgecolor": "none"})
+    ax.legend(loc="lower center", ncols=4, fontsize=8)
+
+    def draw(k):
+        if not snapshots:
+            caption.set_text("更新なし")
+            return
+        step = min(k, len(snapshots) - 1)
+        own, reports = snapshots[step]
+        discarded_points, retained_points = [], []
+        counts = []
+        for axis in range(2):
+            vals = reports[:, axis]
+            mask = np.zeros(len(vals), dtype=bool)
+            mask[retained_indices(own[axis], vals, result.config.f)] = True
+            xy = np.column_stack((vals, np.full(len(vals), 1 - axis)))
+            discarded_points.extend(xy[~mask])
+            retained_points.extend(xy[mask])
+            counts.append(int(mask.sum()))
+        removed.set_offsets(np.asarray(discarded_points).reshape(-1, 2))
+        kept.set_offsets(np.asarray(retained_points).reshape(-1, 2))
+        own_mark.set_offsets(np.column_stack((own, [1, 0])))
+        target.set_offsets(np.column_stack((result.positions[step + 1, reference], [1, 0])))
+        prefix = "直前の更新　" if k != step else ""
+        caption.set_text(f"{prefix}近傍 {len(reports)} 体のうち xで {counts[0]} 件、yで {counts[1]} 件を採用")
+
+    return draw
+
+
 def plot_hull_comparison(results, path):
     """Show the first moves separately from the 100-step outcome."""
     c = results[0].config
@@ -102,7 +158,8 @@ def plot_hull_comparison(results, path):
         ax.set_xlabel("更新ステップ")
         ax.grid(color="#dce1e7", linewidth=0.8)
         ax.set_axisbelow(True)
-    fig.suptitle(f"MECと凸包による集合の比較　{fault_name(c)}　視認半径 {c.radius:g} m", fontsize=15)
+    title = f"{ALGORITHM_NAMES[c.algorithm]}による集合" if len(results) == 1 else "MECと凸包による集合の比較"
+    fig.suptitle(f"{title}　{fault_name(c)}　視認半径 {c.radius:g} m", fontsize=15)
     fig.savefig(path, dpi=150)
     plt.close(fig)
 
@@ -122,8 +179,8 @@ def save_video(results, path):
     c = results[0].config
     fps, dpi = 12, 100
     fig = plt.figure(figsize=(16, 9), dpi=dpi, facecolor="#f4f7fa")
-    msr_detail = len(results) == 1 and c.algorithm == "mec-hull-msr"
-    grid = fig.add_gridspec(2, len(results) + int(msr_detail), height_ratios=[1.65, 1], left=.065,
+    detail_panel = {"mec-hull-msr": _msr_panel, "wmsr": _wmsr_panel}.get(c.algorithm) if len(results) == 1 else None
+    grid = fig.add_gridspec(2, len(results) + int(detail_panel is not None), height_ratios=[1.65, 1], left=.065,
                            right=.98, top=.83, bottom=.09, hspace=.36, wspace=.24)
     all_positions = np.concatenate([r.positions.reshape(-1, 2) for r in results])
     low, high = all_positions.min(axis=0), all_positions.max(axis=0)
@@ -162,7 +219,7 @@ def save_video(results, path):
         readout = ax.text(.04, .95, "", transform=ax.transAxes, va="top", fontsize=10, zorder=6,
                           bbox={"facecolor": "white", "alpha": .9, "edgecolor": "none"})
         panels.append((result, trail, good, bad, readout))
-    show_msr = _msr_panel(fig.add_subplot(grid[0, 1]), results[0]) if msr_detail else None
+    show_detail = detail_panel(fig.add_subplot(grid[0, 1]), results[0]) if detail_panel else None
 
     error = fig.add_subplot(grid[1, :])
     # Compact a long steady tail while keeping each of the early updates legible.
@@ -207,8 +264,8 @@ def save_video(results, path):
         for (line, series), mark in zip(lines, marks):
             line.set_data(compressed[:k + 1], series[:k + 1])
             mark.set_data([compressed[k]], [series[k]])
-        if show_msr is not None:
-            show_msr(k)
+        if show_detail is not None:
+            show_detail(k)
 
     try:
         with TemporaryDirectory(dir=path.parent) as tmp:

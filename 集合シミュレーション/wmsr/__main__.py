@@ -164,6 +164,8 @@ def main():
             if args.compare_hulls:
                 plot_hull_comparison(results, directory / "比較グラフ.png")
             if args.video:
+                if len(results) == 1 and results[0].config.algorithm == "wmsr":
+                    plot_hull_comparison(results, directory / "集合の評価.png")
                 name = "集合の比較.mp4" if len(results) > 1 else "集合の動画.mp4"
                 save_video(results, directory / name)
     except (ValueError, TypeError, OSError) as exc:

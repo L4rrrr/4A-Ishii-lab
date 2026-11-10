@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 FIGURE_NAMES = {
     "比較グラフ.png": "比較グラフ",
+    "集合の評価.png": "集合の評価グラフ",
     "overview.png": "軌跡と集合の進み具合",
     "attack_messages.png": "ビザンチン故障機の送信値",
     "animation.gif": "集合アニメーション",
