@@ -9,7 +9,8 @@ from .circle import minimum_enclosing_circle
 from .hull import convex_hull, distance_to_hull, guarded_hull
 
 ALGORITHM_NAMES = {"wmsr": "W-MSR", "mec": "最小包含円",
-                   "mec-hull": "MEC中心の凸包", "mec-hull-safe": "安全領域つき凸包"}
+                   "mec-hull": "MEC中心の凸包", "mec-hull-safe": "安全領域つき凸包",
+                   "mec-hull-msr": "全MEC中心のMSR凸包"}
 FAULT_NAMES = {"none": "故障なし", "byzantine": "ビザンチン故障", "stuck": "停止故障", "random": "ランダム移動故障"}
 
 
@@ -207,6 +208,30 @@ def _hull_targets(positions, centers, graph, position_reports, center_reports, f
     return targets, held
 
 
+def msr_center_mask(centers, f):
+    """Discard a whole center if it is among either coordinate's f extremes."""
+    keep = np.ones(len(centers), dtype=bool)
+    if f:
+        order = np.argsort(centers, axis=0, kind="stable")
+        keep[order[:f]] = False
+        keep[order[-f:]] = False
+    return keep
+
+
+def _msr_hull_targets(positions, centers, center_reports, f):
+    """Every recipient has the n reports; first-round positions remain range limited."""
+    targets = positions.copy()
+    held = np.zeros(len(positions), dtype=bool)
+    for i, received in enumerate(center_reports):
+        values = received.copy()
+        values[i] = centers[i]
+        keep = msr_center_mask(values, f)
+        held[i] = not keep.any()
+        if not held[i]:
+            targets[i] = values[keep].mean(axis=0)
+    return targets, held
+
+
 def component_count(graph):
     """Connected components of the undirected visibility graph."""
     unseen = set(range(len(graph)))
@@ -264,7 +289,9 @@ class Result:
         if self.hull_violation is not None:
             summary["max_initial_normal_hull_violation_m"] = float(self.hull_violation.max())
         if self.held is not None:
-            summary["normal_empty_guard_updates"] = int(self.held[:, ~self.faulty].sum())
+            key = ("normal_empty_msr_updates" if self.config.algorithm == "mec-hull-msr"
+                   else "normal_empty_guard_updates")
+            summary[key] = int(self.held[:, ~self.faulty].sum())
         return summary
 
 
@@ -297,10 +324,10 @@ def simulate(config=Config(), initial_positions=None):
         circle_centers = np.empty((config.steps, config.n, 2))
         circle_radii = np.empty((config.steps, config.n))
     targets_history = center_fault_history = held_history = None
-    if config.algorithm in ("mec-hull", "mec-hull-safe"):
+    if config.algorithm in ("mec-hull", "mec-hull-safe", "mec-hull-msr"):
         targets_history = np.empty_like(circle_centers)
         center_fault_history = np.empty_like(fault_reports)
-    if config.algorithm == "mec-hull-safe":
+    if config.algorithm in ("mec-hull-safe", "mec-hull-msr"):
         held_history = np.zeros((config.steps, config.n), dtype=bool)
     history[0] = initial
     for k in range(config.steps):
@@ -317,9 +344,12 @@ def simulate(config=Config(), initial_positions=None):
                 center_reports = _byzantine_reports(centers, config, faulty, center_rng)
                 if not np.all(np.isfinite(center_reports)):
                     raise ValueError("MEC中心の報告に有限でない値があります")
-                targets, held = _hull_targets(old, centers, radius_graph(old, config.radius),
-                                              reports, center_reports, config.f,
-                                              held_history is not None)
+                if config.algorithm == "mec-hull-msr":
+                    targets, held = _msr_hull_targets(old, centers, center_reports, config.f)
+                else:
+                    targets, held = _hull_targets(old, centers, radius_graph(old, config.radius),
+                                                  reports, center_reports, config.f,
+                                                  config.algorithm == "mec-hull-safe")
                 targets_history[k] = targets
                 center_fault_history[k] = center_reports[:, faulty, :]
                 if held_history is not None:

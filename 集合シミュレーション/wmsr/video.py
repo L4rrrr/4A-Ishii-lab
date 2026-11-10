@@ -12,13 +12,64 @@ from matplotlib.ticker import MaxNLocator
 
 from .hull import convex_hull
 from .plotting import fault_name
-from .simulation import ALGORITHM_NAMES
+from .simulation import ALGORITHM_NAMES, msr_center_mask, radius_graph
 
 
 COLORS = {"wmsr": "#4a61a7", "mec": "#aa491f", "mec-hull": "#196a9c",
-          "mec-hull-safe": "#137b5a"}
+          "mec-hull-safe": "#137b5a", "mec-hull-msr": "#6f50a1"}
 NORMAL = "#25729e"
 FAULT = "#c84a3c"
+
+
+def _msr_panel(ax, result):
+    """Show the center reports and selected target of one normal receiver."""
+    reference = int(np.flatnonzero(~result.faulty)[0])
+    initial_graph = radius_graph(result.positions[0], result.config.radius)
+    sees_fault = np.flatnonzero(~result.faulty & initial_graph[:, result.faulty].any(axis=1))
+    if len(sees_fault):
+        reference = int(sees_fault[0])
+    reports = result.circle_centers.copy()
+    reports[:, result.faulty] = result.center_fault_reports[:, reference]
+    points = reports.reshape(-1, 2) if len(reports) else result.positions[0]
+    low, high = points.min(axis=0), points.max(axis=0)
+    midpoint = (low + high) / 2
+    margin = max(float(np.max(high - low)) * .58, .5)
+    ax.set(xlim=(midpoint[0] - margin, midpoint[0] + margin),
+           ylim=(midpoint[1] - margin, midpoint[1] + margin), xlabel="中心のx座標 [m]",
+           ylabel="中心のy座標 [m]", title=f"正常機 {reference} が受け取った全中心")
+    ax.set_aspect("equal")
+    ax.grid(color="#e0e6ed", lw=.7)
+    ax.set_axisbelow(True)
+    removed = ax.scatter([], [], s=75, color="#9b6c3e", marker="x", label="MSRで除いた中心", zorder=4)
+    kept = ax.scatter([], [], s=64, facecolors="none", edgecolors="#6f50a1", label="残った中心", zorder=5)
+    hull, = ax.plot([], [], color="#6f50a1", lw=1.5, alpha=.65, zorder=3)
+    target = ax.scatter([], [], s=125, marker="*", color="#137b5a", label="移動先", zorder=6)
+    caption = ax.text(.03, .97, "", transform=ax.transAxes, va="top", fontsize=10, zorder=7,
+                      bbox={"facecolor": "white", "alpha": .9, "edgecolor": "none"})
+    ax.legend(loc="lower right", fontsize=8)
+
+    def draw(k):
+        if not len(reports):
+            caption.set_text("更新なし")
+            return
+        last = k == result.config.steps
+        step = min(k, result.config.steps - 1)
+        values = reports[step]
+        keep = msr_center_mask(values, result.config.f)
+        removed.set_offsets(values[~keep])
+        kept.set_offsets(values[keep])
+        vertices = convex_hull(values[keep])
+        if len(vertices):
+            hull.set_data(*np.vstack((vertices, vertices[0])).T)
+            target.set_offsets(result.update_targets[step, reference][None])
+        else:
+            hull.set_data([], [])
+            target.set_offsets(np.empty((0, 2)))
+        prefix = "直前の更新\n" if last else ""
+        caption.set_text(f"{prefix}{len(values)}件中 {int(keep.sum())}件を残す" if keep.any()
+                         else f"{prefix}中心が残らず、その場にとどまる")
+
+    return draw
 
 
 def plot_hull_comparison(results, path):
@@ -71,7 +122,8 @@ def save_video(results, path):
     c = results[0].config
     fps, dpi = 12, 100
     fig = plt.figure(figsize=(16, 9), dpi=dpi, facecolor="#f4f7fa")
-    grid = fig.add_gridspec(2, len(results), height_ratios=[1.65, 1], left=.065,
+    msr_detail = len(results) == 1 and c.algorithm == "mec-hull-msr"
+    grid = fig.add_gridspec(2, len(results) + int(msr_detail), height_ratios=[1.65, 1], left=.065,
                            right=.98, top=.83, bottom=.09, hspace=.36, wspace=.24)
     all_positions = np.concatenate([r.positions.reshape(-1, 2) for r in results])
     low, high = all_positions.min(axis=0), all_positions.max(axis=0)
@@ -110,6 +162,7 @@ def save_video(results, path):
         readout = ax.text(.04, .95, "", transform=ax.transAxes, va="top", fontsize=10, zorder=6,
                           bbox={"facecolor": "white", "alpha": .9, "edgecolor": "none"})
         panels.append((result, trail, good, bad, readout))
+    show_msr = _msr_panel(fig.add_subplot(grid[0, 1]), results[0]) if msr_detail else None
 
     error = fig.add_subplot(grid[1, :])
     # Compact a long steady tail while keeping each of the early updates legible.
@@ -154,6 +207,8 @@ def save_video(results, path):
         for (line, series), mark in zip(lines, marks):
             line.set_data(compressed[:k + 1], series[:k + 1])
             mark.set_data([compressed[k]], [series[k]])
+        if show_msr is not None:
+            show_msr(k)
 
     try:
         with TemporaryDirectory(dir=path.parent) as tmp:

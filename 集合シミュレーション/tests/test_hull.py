@@ -5,6 +5,7 @@ from numpy.testing import assert_allclose
 
 from wmsr import Config, simulate
 from wmsr.hull import convex_hull, distance_to_hull, guarded_hull
+from wmsr.simulation import msr_center_mask
 
 
 class HullUpdateTests(unittest.TestCase):
@@ -45,4 +46,26 @@ class HullUpdateTests(unittest.TestCase):
 
     def test_plain_center_hull_can_leave_initial_normal_hull(self):
         result = simulate(Config(radius=6, fault_count=1, steps=20, algorithm="mec-hull"))
+        self.assertGreater(result.hull_violation.max(), 1.0)
+
+    def test_msr_removes_whole_points_flagged_by_either_axis(self):
+        points = [[0, 1], [6, 2], [2, -5], [3, 8], [2, 3]]
+        assert_allclose(msr_center_mask(points, 1), [False, False, False, False, True])
+        result = simulate(Config(n=5, f=1, radius=0, steps=1, algorithm="mec-hull-msr"), points)
+        # Even isolated agents receive all five center reports in round two.
+        assert_allclose(result.positions[1], [[2, 3]] * 5)
+
+    def test_msr_can_remove_all_centers_and_hold(self):
+        points = [[0, 1], [6, 2], [2, -5], [3, 8]]
+        result = simulate(Config(n=4, f=1, radius=0, steps=1, algorithm="mec-hull-msr"), points)
+        assert_allclose(result.positions[1], points)
+        self.assertEqual(result.summary()["normal_empty_msr_updates"], 4)
+
+    def test_msr_can_filter_faulty_center_without_undoing_position_attack(self):
+        result = simulate(Config(radius=15, fault_count=1, steps=100, algorithm="mec-hull-msr"))
+        for step in range(result.config.steps):
+            for receiver in np.flatnonzero(~result.faulty):
+                reports = result.circle_centers[step].copy()
+                reports[result.faulty] = result.center_fault_reports[step, receiver]
+                self.assertFalse(msr_center_mask(reports, 1)[result.faulty].any())
         self.assertGreater(result.hull_violation.max(), 1.0)
